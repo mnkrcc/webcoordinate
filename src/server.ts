@@ -169,6 +169,9 @@ export class WCServer extends EventEmitter {
     private setupRoutes() {
         const router = express.Router();
 
+        // Setup websocket server on the webcoordinate router
+        this.wsInstance.applyTo(router);
+
         router.get("/meta.json", (_, res) => {
             const lobbyList = this.listLobbies();
             
@@ -249,10 +252,7 @@ export class WCServer extends EventEmitter {
 
             this.emit("open", ev);
         });
-
-        // Setup websocket server on the webcoordinate router
-        this.wsInstance.applyTo(router);
-
+        
         // Add webcoordinate route to express server
         this.server.use("/.webcoordinate", router);
     }
