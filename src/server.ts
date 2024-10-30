@@ -2,9 +2,9 @@ import { EventEmitter } from "events";
 import { randomBytes } from "crypto";
 import express, { Express } from "express";
 import ws from "express-ws";
+import cors from "cors";
 
 export type WCConfig = {
-    // These are only used in an express server is not provided
     port?: number;
     hostname?: string;
     useSingleLobby?: boolean;
@@ -64,7 +64,7 @@ export class WCServer extends EventEmitter {
         const defaultConfig: WCConfig = {
             port: 7750,
             hostname: "0.0.0.0",
-            useSingleLobby: false,
+            useSingleLobby: true,
             runtimeInterval: 10,
             exposeLobbiesInMetadata: true,
             acceptAllConnections: true,
@@ -131,19 +131,19 @@ export class WCServer extends EventEmitter {
         if (this.config.useSingleLobby) this._createLobby("main");
 
         // If no existing server was provided, make a new one
-        if (!server) {
-            this.server = express();
+        this.server = server ?? express();
 
-            this.server.listen(this.config.port!, this.config.hostname!, () => {
-                console.log(`[WebCoordinate] Started WC server at ${this.config.hostname}:${this.config.port}`);
-            });
-        } else {
-            this.server = server;
-        }
+        this.server.use(cors());
         
         this.wsInstance = ws(this.server, undefined, {
             leaveRouterUntouched: true,
         });
+
+        this.wsInstance.app.listen(this.config.port!, this.config.hostname!, () => {
+            console.log(`[WebCoordinate] Started WC server at ${this.config.hostname}:${this.config.port}`);
+        });
+
+        this.setupRoutes();
     }
 
     public createLobby(lobbyId: string) {
@@ -172,6 +172,10 @@ export class WCServer extends EventEmitter {
         // Setup websocket server on the webcoordinate router
         this.wsInstance.applyTo(router);
 
+        router.get("/ping", (_, res) => {
+            res.send("pong");
+        });
+
         router.get("/meta.json", (_, res) => {
             const lobbyList = this.listLobbies();
             
@@ -188,6 +192,8 @@ export class WCServer extends EventEmitter {
         });
 
         router.ws("/socket", (ws, req) => {
+            console.log(req);
+
             const sync = () => {
                 const syncPacketId = randomBytes(3).toString("hex");
                 const serverTime = new Date().getTime();
