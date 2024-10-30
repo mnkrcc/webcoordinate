@@ -15,11 +15,13 @@ export type WCConfig = {
     rejectionSocketCloseTimeout?: number;
     clientRemoveSocketCloseTimeout?: number;
     lobbyRemoveMessage?: string;
+    createLobbyOnFirstClient?: boolean;
 }
 
 export type WCClient = {
     lastSynchronised: number;
     remove: (reason: string) => void;
+    sendRawMessage: (message: string) => void;
 }
 
 export type WCEvent = {
@@ -72,6 +74,7 @@ export class WCServer extends EventEmitter {
             clientRemoveSocketCloseTimeout: 120,
             lobbyManageInterval: 100,
             lobbyRemoveMessage: "This lobby is no longer available",
+            createLobbyOnFirstClient: true,
         };
 
         // Create a config using either the provided values or the default ones
@@ -86,6 +89,7 @@ export class WCServer extends EventEmitter {
             clientRemoveSocketCloseTimeout: config.clientRemoveSocketCloseTimeout ?? defaultConfig.clientRemoveSocketCloseTimeout,
             lobbyManageInterval: config.lobbyManageInterval ?? defaultConfig.lobbyManageInterval,
             lobbyRemoveMessage: config.lobbyRemoveMessage ?? defaultConfig.lobbyRemoveMessage,
+            createLobbyOnFirstClient: config.createLobbyOnFirstClient ?? defaultConfig.createLobbyOnFirstClient,
         } : defaultConfig);
 
         this.lobbyManageLoop = setInterval(() => {
@@ -109,6 +113,8 @@ export class WCServer extends EventEmitter {
                     if (!lobby) return;
 
                     lobby.clients.push(item.data.client);
+
+                    if (item.cb) item.cb(lobby);
 
                     break;
                 }
@@ -166,6 +172,26 @@ export class WCServer extends EventEmitter {
         return lobbiesList;
     }
 
+    private async joinLobby(lobbyId: string, client: WCClient) {
+        return new Promise((resolve) => {
+            // TODO: Remove client from other lobbies
+            client.sendRawMessage("LOB::JOINING::" + lobbyId);
+
+            this.addLobbyQueueAction(
+                "add-client",
+                {
+                    lobbyId,
+                    client,
+                },
+                (lobby) => {
+                    client.sendRawMessage("LOB::JOINED::" + lobbyId);
+
+                    resolve(lobby.id == lobbyId);
+                }
+            );
+        });
+    }
+
     private setupRoutes() {
         const router = express.Router();
 
@@ -191,9 +217,7 @@ export class WCServer extends EventEmitter {
             res.send(metadataObject);
         });
 
-        router.ws("/socket", (ws, req) => {
-            console.log(req);
-
+        router.ws("/socket", async (ws, req) => {
             const sync = () => {
                 const syncPacketId = randomBytes(3).toString("hex");
                 const serverTime = new Date().getTime();
@@ -201,7 +225,7 @@ export class WCServer extends EventEmitter {
                 ws.send(["SYN", syncPacketId, serverTime].join("::"));
             }
 
-            const accept = () => {
+            const accept = async () => {
                 const client: WCClient = {
                     lastSynchronised: -1,
                     remove: (reason: string) => {
@@ -212,6 +236,9 @@ export class WCServer extends EventEmitter {
                         setTimeout(() => {
                             ws.close();
                         }, this.config.clientRemoveSocketCloseTimeout);
+                    },
+                    sendRawMessage: (message: string) => {
+                        ws.send(message);
                     }
                 };
 
@@ -221,27 +248,28 @@ export class WCServer extends EventEmitter {
 
                 if (this.config.useSingleLobby) {
                     // Add this client to the main lobby
-                    this.addLobbyQueueAction(
-                        "add-client",
-                        {
-                            lobbyId: "main",
-                            client,
-                        },
-                    )
+                    await this.joinLobby("main", client);
+                } else if (this.listLobbies().length == 0) {
+                    // Create a new lobby and join the client to it
+                    const lobbyId = randomBytes(6).toString("hex");
 
-                    sync();
+                    this._createLobby(lobbyId);
+                    await this.joinLobby(lobbyId, client);
                 } else {
                     // TODO: Negotiate lobby to join
                 }
 
-                // sync();
+                sync();
             };
 
-            if (this.config.acceptAllConnections) return accept();
+            if (this.config.acceptAllConnections) await accept();
 
             const ev: WCOpenEvent = {
                 request: req,
                 callback: (shouldAccept: boolean, rejectionPayload?: string) => {
+                    // Ignore the callback response if we want to accept the connection anyway
+                    if (this.config.acceptAllConnections) return;
+                    
                     if (!shouldAccept) {
                         ws.send(rejectionPayload ?? ["ERR", "Access Denied"].join("::"));
 
